@@ -68,7 +68,9 @@ export type ComponentNameResolver = (
 export interface ParserOptions {
   propFilter?: StaticPropFilter | PropFilter;
   componentNameResolver?: ComponentNameResolver;
+  shouldExtractLiteralValuesFromEnum?: boolean;
   shouldRemoveUndefinedFromOptional?: boolean;
+  shouldExtractValuesFromUnion?: boolean;
   maxValueFromObjectExtractionDepth?: number;
   savePropValueAsString?: boolean;
 }
@@ -193,20 +195,28 @@ export class Parser {
   private checker: ts.TypeChecker;
   private propFilter: PropFilter;
   private shouldRemoveUndefinedFromOptional: boolean;
+  private shouldExtractLiteralValuesFromEnum: boolean;
+  private shouldExtractValuesFromUnion: boolean;
   private maxValueFromObjectExtractionDepth: number;
   private savePropValueAsString: boolean;
 
   constructor(program: ts.Program, opts: ParserOptions) {
     const {
       savePropValueAsString,
+      shouldExtractLiteralValuesFromEnum,
       shouldRemoveUndefinedFromOptional,
+      shouldExtractValuesFromUnion,
       maxValueFromObjectExtractionDepth = 8
     } = opts;
     this.checker = program.getTypeChecker();
     this.propFilter = buildFilter(opts);
+    this.shouldExtractLiteralValuesFromEnum = Boolean(
+      shouldExtractLiteralValuesFromEnum
+    );
     this.shouldRemoveUndefinedFromOptional = Boolean(
       shouldRemoveUndefinedFromOptional
     );
+    this.shouldExtractValuesFromUnion = Boolean(shouldExtractValuesFromUnion);
     this.maxValueFromObjectExtractionDepth = Number(
       maxValueFromObjectExtractionDepth
     );
@@ -534,176 +544,10 @@ export class Parser {
     return returnTag.text || null;
   }
 
-  public getLayerProperties(propsType: ts.Type) {
-    const baseProps = propsType.getApparentProperties();
-    // Props Properties (ie. keys)
-    let propertiesOfProps = baseProps;
-
-    if (propsType.isUnionOrIntersection()) {
-      propertiesOfProps = [
-        // Resolve extra properties in the union/intersection
-        ...(propertiesOfProps = (this
-          .checker as any).getAllPossiblePropertiesOfTypes(propsType.types)),
-        // But props we already have override those as they are already correct.
-        ...baseProps
-      ];
-
-      if (!propertiesOfProps.length) {
-        const subTypes = (this.checker as any).getAllPossiblePropertiesOfTypes(
-          propsType.types.reduce<ts.Symbol[]>(
-            // @ts-ignore
-            (all, t) => [...all, ...(t.types || [])],
-            []
-          )
-        );
-
-        propertiesOfProps = [...subTypes, ...baseProps];
-      }
-    }
-
-    return { baseProps, propertiesOfProps };
-  }
-
-  public getDocsForANestedLayerOfProperties(
-    sourceSymbol: ts.Symbol,
-    propType: ts.Type,
-    depth: number = 1,
-    debug = false
-  ) {
-    // TODO it might make sense to have an enum for unions rather than merging like
-    // is done for the root layer
-    const { baseProps, propertiesOfProps } = this.getLayerProperties(propType);
-
-    const result: Props = {};
-
-    propertiesOfProps.forEach(propSymbol => {
-      const propName = propSymbol.getName();
-
-      // Find type of prop by looking in context of the props object itself.
-      const propTypeFromSourceSymbol = this.checker.getTypeOfSymbolAtLocation(
-        propSymbol,
-        sourceSymbol.valueDeclaration!
-      );
-
-      const propTypeFromPropSymbol = this.checker.getTypeOfSymbolAtLocation(
-        propSymbol,
-        propSymbol.valueDeclaration!
-      );
-
-      const propType =
-        this.checker.typeToString(propTypeFromSourceSymbol) === 'any'
-          ? propTypeFromPropSymbol
-          : propTypeFromSourceSymbol;
-
-      const jsDocComment = this.findDocComment(propSymbol);
-
-      const parent = getParentType(propSymbol);
-      const declarations = propSymbol.declarations || [];
-      const baseProp = baseProps.find(p => p.getName() === propName);
-
-      const required =
-        !isOptional(propSymbol) &&
-        // If in a intersection or union check original declaration for "?"
-        // @ts-ignore
-        declarations.every(d => !d.questionToken) &&
-        (!baseProp || !isOptional(baseProp));
-
-      const type = this.getDocgenType(
-        undefined,
-        propSymbol,
-        propType,
-        false,
-        depth,
-        debug
-      );
-
-      const propItem = {
-        defaultValue: undefined,
-        description: jsDocComment.fullComment,
-        name: propName,
-        parent,
-        required,
-        type
-        // casting to avoid issue with JSDocTypeTagPropItem colliding
-        // with NonBasicOrLiteralPropItem and StringLiteralPropItem
-      } as PropItem;
-
-      result[propName] = propItem;
-    });
-
-    return result;
-  }
-
-  public getDocsForALayerOfProperties(
-    sourceObjectTsSymbol: ts.Symbol,
-    defaultProps: StringIndexedObject<string>,
-    depth: number = 1,
-    debug = false
-  ) {
-    const propsType = this.checker.getTypeOfSymbolAtLocation(
-      sourceObjectTsSymbol,
-      sourceObjectTsSymbol.valueDeclaration
-    );
-    const { baseProps, propertiesOfProps } = this.getLayerProperties(propsType);
-
-    const result: Props = {};
-
-    propertiesOfProps.forEach(propSymbol => {
-      const propName = propSymbol.getName();
-
-      // Find type of prop by looking in context of the props object itself.
-      const propType = this.checker.getTypeOfSymbolAtLocation(
-        propSymbol,
-        sourceObjectTsSymbol.valueDeclaration!
-      );
-
-      const jsDocComment = this.findDocComment(propSymbol);
-      const hasCodeBasedDefault = defaultProps[propName] !== undefined;
-
-      let defaultValue: { value: any } | null = null;
-
-      if (hasCodeBasedDefault) {
-        defaultValue = { value: defaultProps[propName] };
-      } else if (jsDocComment.tags.default) {
-        defaultValue = { value: jsDocComment.tags.default };
-      }
-
-      const parent = getParentType(propSymbol);
-      const declarations = propSymbol.declarations || [];
-      const baseProp = baseProps.find(p => p.getName() === propName);
-
-      const required =
-        !isOptional(propSymbol) &&
-        !hasCodeBasedDefault &&
-        // If in a intersection or union check original declaration for "?"
-        // @ts-ignore
-        declarations.every(d => !d.questionToken) &&
-        (!baseProp || !isOptional(baseProp));
-
-      const type = this.getDocgenType(
-        jsDocComment,
-        propSymbol,
-        propType,
-        required,
-        depth,
-        debug
-      );
-
-      const propItem = {
-        defaultValue,
-        description: jsDocComment.fullComment,
-        name: propName,
-        parent,
-        required,
-        type
-        // casting to avoid issue with JSDocTypeTagPropItem colliding
-        // with NonBasicOrLiteralPropItem and StringLiteralPropItem
-      } as PropItem;
-
-      result[propName] = propItem;
-    });
-
-    return result;
+  private getValuesFromUnionType(type: ts.Type): string | number {
+    if (type.isStringLiteral()) return `"${type.value}"`;
+    if (type.isNumberLiteral()) return `${type.value}`;
+    return this.checker.typeToString(type);
   }
 
   public getDocgenType(
@@ -894,6 +738,178 @@ export class Parser {
     }
 
     return { name: propTypeString, raw: propTypeString };
+  }
+
+  public getLayerProperties(propsType: ts.Type) {
+    const baseProps = propsType.getApparentProperties();
+    // Props Properties (ie. keys)
+    let propertiesOfProps = baseProps;
+
+    if (propsType.isUnionOrIntersection()) {
+      propertiesOfProps = [
+        // Resolve extra properties in the union/intersection
+        ...(propertiesOfProps = (this
+          .checker as any).getAllPossiblePropertiesOfTypes(propsType.types)),
+        // But props we already have override those as they are already correct.
+        ...baseProps
+      ];
+
+      if (!propertiesOfProps.length) {
+        const subTypes = (this.checker as any).getAllPossiblePropertiesOfTypes(
+          propsType.types.reduce<ts.Symbol[]>(
+            // @ts-ignore
+            (all, t) => [...all, ...(t.types || [])],
+            []
+          )
+        );
+
+        propertiesOfProps = [...subTypes, ...baseProps];
+      }
+    }
+
+    return { baseProps, propertiesOfProps };
+  }
+
+  public getDocsForANestedLayerOfProperties(
+    sourceSymbol: ts.Symbol,
+    propType: ts.Type,
+    depth: number = 1,
+    debug = false
+  ) {
+    // TODO it might make sense to have an enum for unions rather than merging like
+    // is done for the root layer
+    const { baseProps, propertiesOfProps } = this.getLayerProperties(propType);
+
+    const result: Props = {};
+
+    propertiesOfProps.forEach(propSymbol => {
+      const propName = propSymbol.getName();
+
+      // Find type of prop by looking in context of the props object itself.
+      const propTypeFromSourceSymbol = this.checker.getTypeOfSymbolAtLocation(
+        propSymbol,
+        sourceSymbol.valueDeclaration!
+      );
+
+      const propTypeFromPropSymbol = this.checker.getTypeOfSymbolAtLocation(
+        propSymbol,
+        propSymbol.valueDeclaration!
+      );
+
+      const propType =
+        this.checker.typeToString(propTypeFromSourceSymbol) === 'any'
+          ? propTypeFromPropSymbol
+          : propTypeFromSourceSymbol;
+
+      const jsDocComment = this.findDocComment(propSymbol);
+
+      const parent = getParentType(propSymbol);
+      const declarations = propSymbol.declarations || [];
+      const baseProp = baseProps.find(p => p.getName() === propName);
+
+      const required =
+        !isOptional(propSymbol) &&
+        // If in a intersection or union check original declaration for "?"
+        // @ts-ignore
+        declarations.every(d => !d.questionToken) &&
+        (!baseProp || !isOptional(baseProp));
+
+      const type = this.getDocgenType(
+        undefined,
+        propSymbol,
+        propType,
+        false,
+        depth,
+        debug
+      );
+
+      const propItem = {
+        defaultValue: undefined,
+        description: jsDocComment.fullComment,
+        name: propName,
+        parent,
+        required,
+        type
+        // casting to avoid issue with JSDocTypeTagPropItem colliding
+        // with NonBasicOrLiteralPropItem and StringLiteralPropItem
+      } as PropItem;
+
+      result[propName] = propItem;
+    });
+
+    return result;
+  }
+
+  public getDocsForALayerOfProperties(
+    sourceObjectTsSymbol: ts.Symbol,
+    defaultProps: StringIndexedObject<string>,
+    depth: number = 1,
+    debug = false
+  ) {
+    const propsType = this.checker.getTypeOfSymbolAtLocation(
+      sourceObjectTsSymbol,
+      sourceObjectTsSymbol.valueDeclaration
+    );
+    const { baseProps, propertiesOfProps } = this.getLayerProperties(propsType);
+
+    const result: Props = {};
+
+    propertiesOfProps.forEach(propSymbol => {
+      const propName = propSymbol.getName();
+
+      // Find type of prop by looking in context of the props object itself.
+      const propType = this.checker.getTypeOfSymbolAtLocation(
+        propSymbol,
+        sourceObjectTsSymbol.valueDeclaration!
+      );
+
+      const jsDocComment = this.findDocComment(propSymbol);
+      const hasCodeBasedDefault = defaultProps[propName] !== undefined;
+
+      let defaultValue: { value: any } | null = null;
+
+      if (hasCodeBasedDefault) {
+        defaultValue = { value: defaultProps[propName] };
+      } else if (jsDocComment.tags.default) {
+        defaultValue = { value: jsDocComment.tags.default };
+      }
+
+      const parent = getParentType(propSymbol);
+      const declarations = propSymbol.declarations || [];
+      const baseProp = baseProps.find(p => p.getName() === propName);
+
+      const required =
+        !isOptional(propSymbol) &&
+        !hasCodeBasedDefault &&
+        // If in a intersection or union check original declaration for "?"
+        // @ts-ignore
+        declarations.every(d => !d.questionToken) &&
+        (!baseProp || !isOptional(baseProp));
+
+      const type = this.getDocgenType(
+        jsDocComment,
+        propSymbol,
+        propType,
+        required,
+        depth,
+        debug
+      );
+
+      const propItem = {
+        defaultValue,
+        description: jsDocComment.fullComment,
+        name: propName,
+        parent,
+        required,
+        type
+        // casting to avoid issue with JSDocTypeTagPropItem colliding
+        // with NonBasicOrLiteralPropItem and StringLiteralPropItem
+      } as PropItem;
+
+      result[propName] = propItem;
+    });
+
+    return result;
   }
 
   public getPropsInfo(
