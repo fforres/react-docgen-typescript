@@ -12,7 +12,8 @@ import {
   NumericEnumPropItem,
   StringEnumPropItem,
   UnionPropItem,
-  HeterogeneousEnumPropItem
+  HeterogeneousEnumPropItem,
+  ValueTypes
 } from './PropItem';
 export { Props, ParentType, PropItem, PropItemType };
 
@@ -550,6 +551,23 @@ export class Parser {
     return this.checker.typeToString(type);
   }
 
+  private getTypeFromUnionType(type: ts.Type): ValueTypes {
+    const flag = type.getFlags();
+    if (flag === ts.TypeFlags.Number || flag === ts.TypeFlags.NumberLiteral) {
+      return 'number';
+    }
+    if (flag === ts.TypeFlags.String || flag === ts.TypeFlags.StringLiteral) {
+      return 'string';
+    }
+    if (flag === ts.TypeFlags.Boolean || flag === ts.TypeFlags.BooleanLiteral) {
+      return 'string';
+    }
+    if (flag === ts.TypeFlags.Undefined) {
+      return 'undefined';
+    }
+    return 'undefined';
+  }
+
   public getDocgenType(
     jsDocComment: JSDoc | undefined,
     propSymbol: ts.Symbol,
@@ -569,6 +587,17 @@ export class Parser {
     }
 
     if (propType.isUnion()) {
+      if (this.shouldExtractValuesFromUnion) {
+        return {
+          name: 'enum',
+          raw: propTypeString,
+          value: propType.types.map(type => ({
+            value: this.getValuesFromUnionType(type),
+            raw: this.getTypeFromUnionType(type),
+            type: this.getTypeFromUnionType(type)
+          }))
+        };
+      }
       const value: (EnumValue | UnionPropItem['type']['value'][number])[] = [];
 
       let isUnion = false;
@@ -668,6 +697,7 @@ export class Parser {
         };
       }
 
+      // TODO: Figure out how to get array types
       const typeArgs: readonly ts.Type[] =
         this.checker.getTypeArguments(propType) ?? [];
 

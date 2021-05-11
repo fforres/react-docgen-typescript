@@ -174,6 +174,8 @@ export interface UndefinedEnumPropItem {
   parent?: ParentType;
 }
 
+export type ValueTypes = 'number' | 'string' | 'boolean' | 'undefined';
+
 export interface HeterogeneousEnumPropItem {
   name: string;
   required: boolean;
@@ -190,7 +192,7 @@ export interface HeterogeneousEnumPropItem {
     value: {
       value: number | string | boolean | undefined;
       raw: string;
-      type: 'number' | 'string' | 'boolean' | 'undefined';
+      type: ValueTypes;
     }[];
     raw: string;
   };
